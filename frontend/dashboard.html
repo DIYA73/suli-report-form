@@ -207,7 +207,7 @@
       <a class="btn" href="/map.html">🗺️ نەخشە</a>
       <button class="btn" id="triage-all-btn">🤖 شیکاری AI بۆ هەموو ڕاپۆرتە چاوەڕوانەکان</button>
       <button class="btn" id="refresh-btn">نوێکردنەوە</button>
-      <a class="btn primary" href="/api/reports/export.csv">داگرتنی CSV</a>
+      <button class="btn primary" id="csv-btn" type="button">داگرتنی CSV</button>
     </div>
   </div>
 
@@ -266,9 +266,38 @@
   </div>
 </div>
 
+<script src="common.js"></script>
 <script>
 const ACCENT = "#3b6dee";
 let categoryLabels = {};
+
+// ---- admin token -------------------------------------------------------
+// When the server has ADMIN_TOKEN set, every admin request needs it in an
+// X-Admin-Token header. We ask for it once (kept for this browser tab only)
+// and send it automatically; if the server has no ADMIN_TOKEN nothing is asked.
+const TOKEN_KEY = "adminToken";
+function getToken() {
+  try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return ""; }
+}
+function setToken(t) {
+  try { sessionStorage.setItem(TOKEN_KEY, t); } catch (e) { /* storage blocked - just ask again next time */ }
+}
+async function adminFetch(url, options) {
+  options = options || {};
+  let res;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const used = getToken();
+    const headers = Object.assign({}, options.headers);
+    if (used) headers["X-Admin-Token"] = used;
+    res = await fetch(url, Object.assign({}, options, { headers }));
+    if (res.status !== 401) return res;
+    if (getToken() !== used) continue; // a parallel request already got a new token
+    const entered = window.prompt("This dashboard is protected. Enter the admin token:");
+    if (!entered) return res; // cancelled
+    setToken(entered.trim());
+  }
+  return res;
+}
 
 async function loadCategoryLabels() {
   try {
@@ -288,7 +317,8 @@ function fmtTime(iso) {
 }
 
 async function loadStats() {
-  const res = await fetch("/api/reports/stats");
+  const res = await adminFetch("/api/reports/stats");
+  if (!res.ok) throw new Error("stats request failed: " + res.status);
   const s = await res.json();
 
   document.getElementById("stat-total").textContent = s.total;
@@ -317,10 +347,10 @@ function renderBarChart(targetId, items, emptyText) {
   el.innerHTML = items.map((c) => {
     const pct = Math.max(4, Math.round((c.count / max) * 100));
     return `
-      <div class="bar-row" title="${c.label}: ${c.count}">
-        <div class="bar-label">${c.label}</div>
+      <div class="bar-row" title="${esc(c.label)}: ${esc(c.count)}">
+        <div class="bar-label">${esc(c.label)}</div>
         <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
-        <div class="bar-count">${c.count}</div>
+        <div class="bar-count">${esc(c.count)}</div>
       </div>`;
   }).join("");
 }
@@ -330,7 +360,7 @@ const SEVERITY_COLORS = { 1: "#2fbf71", 2: "#8bc34a", 3: "#d9a441", 4: "#e08a3c"
 function severityCell(r) {
   if (r.ai_status === "done" && r.severity) {
     const color = SEVERITY_COLORS[r.severity] || "#9a9ca6";
-    return `<span class="sev-badge" style="background:${color}22; color:${color}; border:1px solid ${color}55;">${r.severity}/5</span>`;
+    return `<span class="sev-badge" style="background:${color}22; color:${color}; border:1px solid ${color}55;">${esc(r.severity)}/5</span>`;
   }
   const labels = {
     unavailable: "کلیلی AI دانەمەزراوە",
@@ -338,7 +368,7 @@ function severityCell(r) {
     pending: "شیکاری AI ڕانەکراوە - کرتە بکە بۆ دەستپێکردن",
   };
   const label = labels[r.ai_status] || labels.pending;
-  return `<button class="mini-btn" data-triage-id="${r.id}" title="${label}">🤖 شیکاری بکە</button>`;
+  return `<button class="mini-btn" data-triage-id="${esc(r.id)}" title="${esc(label)}">🤖 شیکاری بکە</button>`;
 }
 
 function renderSparkline(byDay) {
@@ -365,13 +395,13 @@ function renderSparkline(byDay) {
   const areaPath = linePath + ` L${points[points.length - 1].x.toFixed(1)},${(padTop + innerH).toFixed(1)} L${points[0].x.toFixed(1)},${(padTop + innerH).toFixed(1)} Z`;
 
   const dots = points.map((p) =>
-    `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3" fill="${ACCENT}"><title>${p.d.day}: ${p.d.count}</title></circle>`
+    `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3" fill="${ACCENT}"><title>${esc(p.d.day)}: ${esc(p.d.count)}</title></circle>`
   ).join("");
 
   const labels = points.map((p, i) => {
     if (byDay.length > 8 && i % 2 !== 0) return "";
     const short = p.d.day.slice(5); // MM-DD
-    return `<text x="${p.x.toFixed(1)}" y="${h - 6}" text-anchor="middle" class="spark-day-label">${short}</text>`;
+    return `<text x="${p.x.toFixed(1)}" y="${h - 6}" text-anchor="middle" class="spark-day-label">${esc(short)}</text>`;
   }).join("");
 
   el.innerHTML = `
@@ -406,18 +436,24 @@ function renderReportsTable(reports, emptyMessage) {
   const body = document.getElementById("reports-body");
 
   if (!reports.length) {
-    body.innerHTML = `<tr><td colspan="8" class="empty">${emptyMessage}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="8" class="empty">${esc(emptyMessage)}</td></tr>`;
     return;
   }
 
+  // Every value that came from a citizen (location name, description) or the
+  // AI (summary, department) goes through esc() - they are free text and must
+  // never be treated as HTML, or a crafted report could run script in the
+  // admin's browser.
   body.innerHTML = reports.map((r) => {
     let location = `<span class="muted">—</span>`;
     if (r.lat != null && r.lng != null) {
-      const mapsUrl = `https://www.google.com/maps?q=${r.lat},${r.lng}`;
-      const label = r.location_label ? r.location_label : (r.lat.toFixed(4) + ", " + r.lng.toFixed(4));
-      location = `<a class="link" target="_blank" href="${mapsUrl}">${label}</a>`;
+      const lat = num(r.lat);
+      const lng = num(r.lng);
+      const mapsUrl = `https://www.google.com/maps?q=${lat},${lng}`;
+      const label = r.location_label ? r.location_label : (lat.toFixed(4) + ", " + lng.toFixed(4));
+      location = `<a class="link" target="_blank" rel="noopener noreferrer" href="${mapsUrl}">${esc(label)}</a>`;
       if (r.location_label) {
-        location += `<div class="muted" style="font-size:11px; margin-top:2px;">${r.lat.toFixed(4)}, ${r.lng.toFixed(4)}</div>`;
+        location += `<div class="muted" style="font-size:11px; margin-top:2px;">${lat.toFixed(4)}, ${lng.toFixed(4)}</div>`;
       }
     }
     // Newer uploads are saved to Supabase Storage and photo_path/audio_path
@@ -425,26 +461,28 @@ function renderReportsTable(reports, emptyMessage) {
     // migration) hold a path relative to the app's local disk, served
     // through /media/... - that disk gets wiped on every restart on hosts
     // like Render's free tier, so those older links are expected to 404.
-    const mediaUrl = (p) => (/^https?:\/\//i.test(p) ? p : `/media/${p.replace(/^uploads[\/\\]/, "").replace(/\\/g, "/")}`);
-    const photo = r.photo_path
-      ? `<a class="link" target="_blank" href="${mediaUrl(r.photo_path)}" title="کرتە بکە بۆ بینینی گەورە">` +
-        `<img class="thumb" src="${mediaUrl(r.photo_path)}" alt="" loading="lazy" ` +
+    // (mediaUrl() is the shared helper in common.js.)
+    const photoUrl = mediaUrl(r.photo_path);
+    const photo = photoUrl
+      ? `<a class="link" target="_blank" rel="noopener noreferrer" href="${esc(photoUrl)}" title="کرتە بکە بۆ بینینی گەورە">` +
+        `<img class="thumb" src="${esc(photoUrl)}" alt="" loading="lazy" ` +
         `onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'muted',textContent:'وێنە نەماوە'}))"></a>`
       : `<span class="muted">—</span>`;
-    const audio = r.audio_path
-      ? `<audio class="mini" controls src="${mediaUrl(r.audio_path)}"></audio>`
+    const audioUrl = mediaUrl(r.audio_path);
+    const audio = audioUrl
+      ? `<audio class="mini" controls src="${esc(audioUrl)}"></audio>`
       : `<span class="muted">—</span>`;
-    const desc = r.description ? r.description : `<span class="muted">—</span>`;
-    const aiSummary = r.ai_summary ? `<div class="ai-summary-line">🤖 ${r.ai_summary}</div>` : "";
+    const desc = r.description ? esc(r.description) : `<span class="muted">—</span>`;
+    const aiSummary = r.ai_summary ? `<div class="ai-summary-line">🤖 ${esc(r.ai_summary)}</div>` : "";
     const categoryLabel = r.category ? (categoryLabels[r.category] || r.category) : "پۆلێنی نەکراو";
     const department = r.department
-      ? `<span class="pill dept-pill">${r.department}</span>`
+      ? `<span class="pill dept-pill">${esc(r.department)}</span>`
       : `<span class="muted">—</span>`;
 
     return `
       <tr>
-        <td class="time-cell">${fmtTime(r.created_at)}</td>
-        <td><span class="pill">${categoryLabel}</span></td>
+        <td class="time-cell">${esc(fmtTime(r.created_at))}</td>
+        <td><span class="pill">${esc(categoryLabel)}</span></td>
         <td>${severityCell(r)}</td>
         <td class="desc-cell">${desc}${aiSummary}</td>
         <td>${department}</td>
@@ -466,7 +504,7 @@ document.getElementById("reports-body").addEventListener("click", async (e) => {
   btn.disabled = true;
   btn.textContent = "...";
   try {
-    await fetch(`/api/reports/${id}/triage`, { method: "POST" });
+    await adminFetch(`/api/reports/${encodeURIComponent(id)}/triage`, { method: "POST" });
   } catch (err) {
     // ignore - loadAll() below will just show it's still not triaged
   }
@@ -479,7 +517,8 @@ document.getElementById("triage-all-btn").addEventListener("click", async () => 
   btn.disabled = true;
   btn.textContent = "کارپێکردن... (چەند چرکەیەک بۆ هەر ڕاپۆرتێک)";
   try {
-    const res = await fetch("/api/reports/triage-all", { method: "POST" });
+    const res = await adminFetch("/api/reports/triage-all", { method: "POST" });
+    if (!res.ok) throw new Error("triage-all failed: " + res.status);
     const data = await res.json();
     btn.textContent = `تەواو بوو (${data.processed} ڕاپۆرت)`;
   } catch (err) {
@@ -493,7 +532,13 @@ document.getElementById("triage-all-btn").addEventListener("click", async () => 
 });
 
 async function loadReports() {
-  const res = await fetch("/api/reports?limit=200");
+  const res = await adminFetch("/api/reports?limit=500");
+  if (!res.ok) {
+    renderReportsTable([], res.status === 401
+      ? "Unauthorized - reload the page and enter the admin token."
+      : "هەڵەیەک ڕوویدا لە بارکردنی ڕاپۆرتەکان");
+    return;
+  }
   const data = await res.json();
   allReports = data.reports;
   applyLocationFilter();
@@ -518,9 +563,28 @@ document.getElementById("location-filter").addEventListener("input", applyLocati
 
 async function loadAll() {
   await loadCategoryLabels();
-  loadStats();
-  loadReports();
+  const results = await Promise.allSettled([loadStats(), loadReports()]);
+  results.forEach((r) => { if (r.status === "rejected") console.error(r.reason); });
 }
+
+// CSV is fetched with the admin token (a plain link can't send it) and saved as a file.
+document.getElementById("csv-btn").addEventListener("click", async () => {
+  try {
+    const res = await adminFetch("/api/reports/export.csv");
+    if (!res.ok) throw new Error("status " + res.status);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "reports.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (err) {
+    alert("Could not download the CSV (" + err.message + ")");
+  }
+});
 
 document.getElementById("refresh-btn").addEventListener("click", loadAll);
 loadAll();

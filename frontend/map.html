@@ -133,6 +133,7 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
   integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="common.js"></script>
 <script>
 // Sulaymaniyah city center - used as the default view when there's nothing
 // (or nothing yet) to fit bounds to.
@@ -162,10 +163,6 @@ legend.onAdd = function () {
 };
 legend.addTo(map);
 
-function mediaUrl(p) {
-  return /^https?:\/\//i.test(p) ? p : `/media/${p.replace(/^uploads[\/\\]/, "").replace(/\\/g, "/")}`;
-}
-
 function fmtTime(iso) {
   try {
     const d = new Date(iso);
@@ -179,25 +176,28 @@ function markerColor(r) {
 }
 
 function buildPopup(r) {
+  // Everything below that came from a citizen or the AI goes through esc() -
+  // location names and summaries are free text and must never be treated as HTML.
   const categoryLabel = r.category ? (categoryLabels[r.category] || r.category) : "پۆلێنی نەکراو";
-  const photo = r.photo_path
-    ? `<img class="popup-photo" src="${mediaUrl(r.photo_path)}" alt="" onerror="this.style.display='none'">`
+  const photoUrl = mediaUrl(r.photo_path);
+  const photo = photoUrl
+    ? `<img class="popup-photo" src="${esc(photoUrl)}" alt="" onerror="this.style.display='none'">`
     : "";
   const sev = (r.ai_status === "done" && r.severity)
-    ? `<span class="popup-sev" style="background:${markerColor(r)}22; color:${markerColor(r)};">${r.severity}/5</span>`
+    ? `<span class="popup-sev" style="background:${markerColor(r)}22; color:${markerColor(r)};">${esc(r.severity)}/5</span>`
     : `<span class="popup-sev" style="background:#eee; color:#888;">چاوەڕوان</span>`;
-  const summary = r.ai_summary ? `<div class="popup-summary">🤖 ${r.ai_summary}</div>` : "";
-  const mapsUrl = `https://www.google.com/maps?q=${r.lat},${r.lng}`;
+  const summary = r.ai_summary ? `<div class="popup-summary">🤖 ${esc(r.ai_summary)}</div>` : "";
+  const mapsUrl = `https://www.google.com/maps?q=${num(r.lat)},${num(r.lng)}`;
 
   return `
     <div class="popup-wrap">
       ${photo}
-      <div class="popup-row"><span>جۆر</span><b>${categoryLabel}</b></div>
+      <div class="popup-row"><span>جۆر</span><b>${esc(categoryLabel)}</b></div>
       <div class="popup-row"><span>گرنگی</span>${sev}</div>
-      ${r.department ? `<div class="popup-row"><span>بەش</span><b>${r.department}</b></div>` : ""}
-      <div class="popup-row"><span>شوێن</span><b>${r.location_label || "—"}</b></div>
+      ${r.department ? `<div class="popup-row"><span>بەش</span><b>${esc(r.department)}</b></div>` : ""}
+      <div class="popup-row"><span>شوێن</span><b>${esc(r.location_label) || "—"}</b></div>
       ${summary}
-      <div class="popup-time">${fmtTime(r.created_at)} · <a href="${mapsUrl}" target="_blank">Google Maps</a></div>
+      <div class="popup-time">${esc(fmtTime(r.created_at))} · <a href="${mapsUrl}" target="_blank" rel="noopener noreferrer">Google Maps</a></div>
     </div>`;
 }
 
@@ -218,7 +218,8 @@ function focusIdFromUrl() {
 }
 
 async function loadReports() {
-  const res = await fetch("/api/reports?limit=500");
+  const res = await fetch("/api/map");
+  if (!res.ok) throw new Error("map data request failed: " + res.status);
   const data = await res.json();
   const withLocation = data.reports.filter((r) => r.lat != null && r.lng != null);
 
@@ -258,7 +259,12 @@ async function loadReports() {
 
 (async function init() {
   await loadCategoryLabels();
-  await loadReports();
+  try {
+    await loadReports();
+  } catch (e) {
+    console.error(e);
+    document.getElementById("top-sub").textContent = "هەڵەیەک ڕوویدا لە بارکردنی ڕاپۆرتەکان";
+  }
 })();
 </script>
 </body>

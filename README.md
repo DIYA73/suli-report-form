@@ -52,7 +52,9 @@ an OpenStreetMap map (via Leaflet.js, no API key needed): color reflects
 AI-assigned severity (green → red), gray/blue for not-yet-triaged reports.
 Tapping a pin shows the photo, category, severity, department, and
 location. Submitting a Quick Report links straight to that report's pin
-(`map.html?focus=<id>`).
+(`map.html?focus=<id>`). It reads `GET /api/map`, which only returns what a
+pin shows (no raw descriptions, voice notes or GPS accuracy), so it's safe
+to keep public even when the dashboard data is locked behind `ADMIN_TOKEN`.
 
 ## AI triage (`backend/ai.py`)
 
@@ -76,7 +78,10 @@ whose first attempt failed:
 as an env var (locally, or in the Render dashboard for the deployed app —
 `render.yaml` already declares the slot, Render will prompt for it on the
 next deploy). Optionally set `ANTHROPIC_MODEL` to override the default
-model. Nothing else needs to change — the feature degrades gracefully with
+model (`claude-sonnet-5-5`; the old default `claude-sonnet-4-5-20250929`
+is deprecated and stops working on 2026-11-30). Photos are shrunk in the
+browser before upload (max 1600 px) because the API rejects images over
+5 MB. Nothing else needs to change — the feature degrades gracefully with
 no key set, so it's safe to deploy either way.
 
 ## Project layout
@@ -86,10 +91,13 @@ backend/
   main.py     FastAPI app: API routes + serves the frontend
   db.py       DB schema + queries (SQLite locally, Postgres in production)
   config.py   Category list (single source of truth) + storage paths
+  uploads.py  Checks that uploads really are an image / audio file (by content)
 frontend/
   index.html      The public Kurdish report form (Quick Report + detailed)
   map.html        Public map view — every located report pinned by severity
   dashboard.html  Your private view of submitted data (see below)
+  common.js       Shared helpers (HTML escaping, safe media URLs)
+tests/        pytest suite (see "Run the tests" below)
 data/         Created automatically: reports.db + uploads/photos, uploads/audio
 Procfile, render.yaml   Deployment config for Render (see "Publish it" below)
 ```
@@ -115,6 +123,24 @@ cd backend
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+## Run the tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+The suite uses a throwaway SQLite database and never calls the network.
+To run it against Postgres too (what production uses), point
+`TEST_DATABASE_URL` at an empty database whose name contains `test` (the
+tests wipe the `reports` table, so anything else is refused):
+
+```bash
+TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/reports_test python -m pytest
+```
+
+GitHub Actions runs both on every push and pull request.
+
 ## Your dashboard
 
 Open **`/dashboard.html`** (e.g. `http://localhost:8000/dashboard.html`,
@@ -125,9 +151,15 @@ a 14-day submissions sparkline, and a full table of every report with
 playable audio, viewable photos, and a Google Maps link for each location.
 There's also a "Download CSV" button there (same as `/api/reports/export.csv`).
 
-It has no password — anyone with the exact URL can view it. That's fine
-for a hackathon, but don't post the `/dashboard.html` link in the same
-place you post the public form link.
+**Locking it down:** set the `ADMIN_TOKEN` env var (Render dashboard →
+Environment) to any long random string. From then on the dashboard data,
+the CSV export, the AI re-triage endpoints and the media re-attach endpoint
+all require that token: the dashboard asks for it once per browser tab and
+sends it as an `X-Admin-Token` header (use the same header with `curl`).
+The report form and the map stay public. If `ADMIN_TOKEN` is **not** set
+everything is open — anyone with the exact URL can view the dashboard — and
+the server logs a warning at startup; that's fine for local development, but
+set it before sharing the app widely.
 
 ## Publish it (a real public URL)
 
@@ -182,20 +214,36 @@ walk through Render + Supabase together)? Just say so.*
   show readable labels if/when reports get classified.
 - `POST /api/reports` — multipart form: `description`, `lat`, `lng`,
   `location_label`, `photo` (file, required), `audio` (file) — plus either
-  `description` or `audio`. Runs AI triage synchronously before responding
-  and returns the created report as JSON, including `ai_status`,
-  `severity`, `ai_summary`, `department`.
+  `description` or `audio`. `lat`/`lng` must be real coordinates (−90…90,
+  −180…180), the photo must really be an image (JPEG/PNG/GIF/WebP/HEIC) and
+  the audio really an audio recording — checked from the file's bytes, not
+  its name — otherwise the request is rejected (`415`/`422`). Free text is
+  capped (description 2000 chars, location name 200). Runs AI triage
+  synchronously before responding and returns the created report as JSON,
+  including `ai_status`, `severity`, `ai_summary`, `department`.
+- `GET  /api/map` — **public**: the located reports with only the fields a
+  map pin needs. Powers `map.html`.
+
+These need the `X-Admin-Token` header when `ADMIN_TOKEN` is set:
+
 - `POST /api/reports/{id}/triage` — (re-)runs AI triage on one existing
   report.
 - `POST /api/reports/triage-all` — runs AI triage over every
   not-yet-triaged report.
-- `GET  /api/reports` — list stored reports (most recent first). Powers
-  the dashboard table.
+- `PATCH /api/reports/{id}/media` — re-attach a `photo` and/or `audio` file
+  to an existing report.
+- `GET  /api/reports?limit=&offset=` — list stored reports (most recent
+  first; `limit` 1–1000, default 200). Powers the dashboard table.
 - `GET  /api/reports/stats` — aggregate counts (total, by category, by
   day, with photo/audio/location, AI-triaged count, average severity, by
   department). Powers the dashboard charts.
 - `GET  /api/reports/export.csv` — flat CSV export of everything stored,
-  including AI fields.
+  including AI fields (UTF-8 with BOM so Excel shows Kurdish text
+  correctly; cells that start with `=`, `+`, `-` or `@` are prefixed with
+  `'` so they can't run as spreadsheet formulas).
+
+Also public:
+
 - `GET  /media/{photos|audio}/{filename}` — serves an uploaded file.
 - `GET  /api/health` — `{"status": "ok", "reports": <count>}`.
 
@@ -233,8 +281,10 @@ sqlite3 data/reports.db "select id, created_at, category, lat, lng from reports;
   description, but a voice-only report (no typed description) doesn't get
   its audio transcribed or factored into the triage yet. That's the
   natural next AI step.
-- No auth, no spam/duplicate detection. The dashboard has no password —
-  see "Your dashboard" above.
+- No spam/duplicate detection or rate limiting on the public form (each
+  submission costs one AI call). The dashboard is protected only by the
+  single shared `ADMIN_TOKEN`, and only when you set it — see "Your
+  dashboard" above.
 - CORS is wide open (`*`) since the form is meant to be shared broadly for
   a demo; tighten this before any real production use.
 - Category and location values only ever need to change in

@@ -360,6 +360,7 @@
   .quick-camera-btn .icon { font-size: 44px; }
   .quick-camera-btn .qlabel { font-size: 16px; font-weight: 700; }
   .quick-camera-btn .qsub { font-size: 12.5px; color: var(--text-dim); text-align: center; line-height: 1.6; }
+  .quick-camera-btn:disabled, .quick-actions button:disabled { opacity: .6; cursor: not-allowed; }
 
   .quick-status-row {
     display: flex;
@@ -458,11 +459,11 @@
     <div class="location-caption">لە Google Maps شوێنی کێشەکە دەستنیشان بکە (نەک ماڵەکەت) · کرتەی درێژ یان ڕاستی کلیک لەسەری بکە و کۆردینەیتەکان کۆپی بکە · پاشان لێرە بیلکێنە</div>
 
     <label for="location-label-input">ناوی گەڕەک یان شەقام <span style="color:var(--danger);">*</span></label>
-    <input type="text" class="location-label-input" id="location-label-input" placeholder="بۆ نموونە: ڕاپەڕین">
+    <input type="text" class="location-label-input" id="location-label-input" maxlength="200" placeholder="بۆ نموونە: ڕاپەڕین">
     <div class="location-caption">بە کۆردینەیتەکە خۆکارانە پڕدەبێتەوە - ئەگەر خۆکارانە دروست نەبوو تکایە بە دەست بینووسە</div>
 
     <label for="description">کێشەکە باس بکە</label>
-    <textarea id="description" placeholder="بۆ نموونە: ئاو لە شەقام کۆبووەتەوە و ڕێگا داخستووە نزیک بازاڕ."></textarea>
+    <textarea id="description" maxlength="2000" placeholder="بۆ نموونە: ئاو لە شەقام کۆبووەتەوە و ڕێگا داخستووە نزیک بازاڕ."></textarea>
 
     <div class="two-col">
       <div class="dashed-btn" id="photo-cell">
@@ -514,6 +515,7 @@
   </div>
 </div>
 
+<script src="common.js"></script>
 <script>
 const API_BASE = ""; // same origin
 
@@ -556,22 +558,86 @@ const aiCard = document.getElementById("ai-card");
 function renderAiCard(data, target) {
   const el = target || aiCard;
   const catLabel = data.category ? (categoryLabels[data.category] || data.category) : null;
-  let body = `<div class="ai-card-title">✅ ڕاپۆرتەکە پاشەکەوتکرا (ژمارە #${data.id})</div>`;
+  let body = `<div class="ai-card-title">✅ ڕاپۆرتەکە پاشەکەوتکرا (ژمارە #${esc(data.id)})</div>`;
   if (data.location_label) {
-    body += `<div class="ai-card-row"><span>شوێن</span><b>${data.location_label}</b></div>`;
+    body += `<div class="ai-card-row"><span>شوێن</span><b>${esc(data.location_label)}</b></div>`;
   }
   if (data.ai_status === "done") {
     body += `
-      <div class="ai-card-row"><span>جۆری کێشە (AI)</span><b>${catLabel || "—"}</b></div>
-      <div class="ai-card-row"><span>ئاستی گرنگی</span><b>${severityDots(data.severity)} (${data.severity}/5)</b></div>
-      ${data.department ? `<div class="ai-card-row"><span>بەشی بەرپرس</span><b>${data.department}</b></div>` : ""}
-      ${data.ai_summary ? `<div class="ai-card-summary">${data.ai_summary}</div>` : ""}
+      <div class="ai-card-row"><span>جۆری کێشە (AI)</span><b>${esc(catLabel || "—")}</b></div>
+      ${data.severity ? `<div class="ai-card-row"><span>ئاستی گرنگی</span><b>${severityDots(data.severity)} (${esc(data.severity)}/5)</b></div>` : ""}
+      ${data.department ? `<div class="ai-card-row"><span>بەشی بەرپرس</span><b>${esc(data.department)}</b></div>` : ""}
+      ${data.ai_summary ? `<div class="ai-card-summary">${esc(data.ai_summary)}</div>` : ""}
     `;
   } else {
     body += `<div class="ai-card-row" style="justify-content:flex-start;"><span>🤖 شیکاری AI هێشتا ئامادە نییە بۆ ئەم ڕاپۆرتە</span></div>`;
   }
   el.innerHTML = body;
   el.style.display = "block";
+}
+
+// ---------- photo shrinking ----------
+// Phone cameras produce 3-10+ MB photos. Shrinking them in the browser before
+// upload makes sending far faster on mobile data, and keeps them under the
+// image size limit of the AI API (an oversize photo made AI triage fail).
+// Never throws: if anything goes wrong the original file is sent untouched.
+const MAX_PHOTO_SIDE = 1600;
+const PHOTO_JPEG_QUALITY = 0.85;
+const SKIP_SHRINK_BELOW_BYTES = 800 * 1024;
+
+function decodeImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    // Never let a stuck decode block the upload: give up and send the original.
+    const timer = setTimeout(() => {
+      URL.revokeObjectURL(url);
+      reject(new Error("image decode timed out"));
+    }, 8000);
+    img.onload = () => {
+      clearTimeout(timer);
+      resolve({ img, url });
+    };
+    img.onerror = () => {
+      clearTimeout(timer);
+      URL.revokeObjectURL(url);
+      reject(new Error("could not decode image"));
+    };
+    img.src = url;
+  });
+}
+
+async function shrinkImage(file) {
+  try {
+    if (!file) return file;
+    if (file.type && !/^image\/(jpeg|png|webp|heic|heif)$/i.test(file.type)) return file;
+    if (/jpeg/i.test(file.type) && file.size <= SKIP_SHRINK_BELOW_BYTES) return file;
+
+    const { img, url } = await decodeImage(file);
+    try {
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      if (!w || !h) return file;
+      const scale = Math.min(1, MAX_PHOTO_SIDE / Math.max(w, h));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(w * scale));
+      canvas.height = Math.max(1, Math.round(h * scale));
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#fff"; // transparent PNGs would otherwise turn black in a JPEG
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", PHOTO_JPEG_QUALITY));
+      if (!blob || !blob.size) return file;
+      // Keep the original if re-encoding didn't make it smaller - unless it's a
+      // format (HEIC) that the server/AI can't use as-is.
+      if (blob.size >= file.size && /^image\/(jpeg|png|webp)$/i.test(file.type)) return file;
+      return new File([blob], "photo.jpg", { type: "image/jpeg" });
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  } catch (e) {
+    return file;
+  }
 }
 
 // ---------- mode tabs ----------
@@ -619,6 +685,7 @@ let quickGeoPromise = null;
 // permission prompt / GPS fix is already resolved by the time the citizen
 // actually taps the shutter, instead of adding that wait after the photo.
 function requestQuickLocation() {
+  quickGeo = null; // never reuse a stale fix (e.g. from page load or the previous report)
   quickGpsDot.className = "dot pending";
   quickGpsText.textContent = "شوێن (GPS) ئامادەکردن...";
   quickGeoPromise = new Promise((resolve) => {
@@ -631,7 +698,7 @@ function requestQuickLocation() {
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        quickGeo = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        quickGeo = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy };
         quickGpsDot.className = "dot ok";
         quickGpsText.textContent = "شوێن ئامادەیە ✓";
         resolve(quickGeo);
@@ -642,18 +709,29 @@ function requestQuickLocation() {
         quickGpsText.textContent = "شوێن نەدۆزرایەوە - ڕێگەپێدان بدە یان بڕۆ بۆ ڕاپۆرتی تەواو";
         resolve(null);
       },
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 15000 }
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 5000 }
     );
   });
   return quickGeoPromise;
 }
 requestQuickLocation();
 
-quickCameraBtn.addEventListener("click", () => quickCameraInput.click());
+quickCameraBtn.addEventListener("click", () => {
+  // Start a fresh GPS fix right now, while the citizen is framing the shot.
+  // The fix taken at page load can be far from the problem - they may have
+  // opened the page at home and walked to the spot since.
+  requestQuickLocation();
+  quickCameraInput.click();
+});
 
 quickCameraInput.addEventListener("change", async () => {
   const file = quickCameraInput.files && quickCameraInput.files[0];
   if (!file) return;
+
+  // Block a second photo while this one is still being processed/uploaded.
+  quickCameraBtn.disabled = true;
+  quickAgainBtn.disabled = true;
+  const shrinkPromise = shrinkImage(file); // runs while we wait for GPS
 
   quickErrorBanner.classList.remove("show");
   quickActions.style.display = "none";
@@ -666,7 +744,7 @@ quickCameraInput.addEventListener("change", async () => {
   quickProgress.style.display = "block";
   quickProgress.textContent = "شوێن پشتڕاستدەکرێتەوە...";
 
-  let geo = quickGeo || (quickGeoPromise ? await quickGeoPromise : null);
+  let geo = quickGeoPromise ? await quickGeoPromise : quickGeo;
   if (!geo) geo = await requestQuickLocation();
 
   if (!geo) {
@@ -674,6 +752,8 @@ quickCameraInput.addEventListener("change", async () => {
     quickErrorBanner.textContent = "نەتوانرا شوێنەکەت بدۆزرێتەوە. تکایە ڕێگەپێدانی شوێن (Location) بدە، یان بڕۆ بۆ '📝 ڕاپۆرتی تەواو' و کۆردینەیت بلکێنە.";
     quickErrorBanner.classList.add("show");
     quickCameraInput.value = "";
+    quickCameraBtn.disabled = false;
+    quickAgainBtn.disabled = false;
     return;
   }
 
@@ -683,9 +763,10 @@ quickCameraInput.addEventListener("change", async () => {
   quickProgress.textContent = "ناردن و شیکاری AI... (چەند چرکەیەک ڕادەگرێت)";
 
   const fd = new FormData();
-  fd.append("photo", file);
+  fd.append("photo", await shrinkPromise);
   fd.append("lat", geo.lat);
   fd.append("lng", geo.lng);
+  if (Number.isFinite(geo.accuracy)) fd.append("accuracy", geo.accuracy);
   fd.append("location_label", label || (geo.lat.toFixed(5) + ", " + geo.lng.toFixed(5)));
   fd.append("quick_report", "true");
 
@@ -706,6 +787,8 @@ quickCameraInput.addEventListener("change", async () => {
     quickErrorBanner.classList.add("show");
   } finally {
     quickCameraInput.value = "";
+    quickCameraBtn.disabled = false;
+    quickAgainBtn.disabled = false;
   }
 });
 
@@ -795,8 +878,15 @@ const locationText = document.getElementById("location-text");
 // shapes (a share link with "@lat,lng", or a "q=" / "ll=" query param).
 function parseCoordinates(raw) {
   if (!raw) return null;
-  raw = raw.trim();
+  raw = raw.trim()
+    // Sorani keyboards can type Arabic-Indic digits and the Arabic comma/decimal mark.
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+    .replace(/٫/g, ".")
+    .replace(/[،؛]/g, ",");
   const patterns = [
+    // The dropped pin itself - more exact than "@lat,lng", which is only where the map was centred.
+    /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/,
     /@(-?\d+\.\d+),\s*(-?\d+\.\d+)/,
     /[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/,
     /[?&]ll=(-?\d+\.\d+),(-?\d+\.\d+)/,
@@ -1084,13 +1174,13 @@ form.addEventListener("submit", async (e) => {
   // The label is independent of the coordinate - the citizen can type it by
   // hand even if they didn't paste coordinates or the auto-guess was wrong.
   fd.append("location_label", locationLabel);
-  if (selectedPhoto) fd.append("photo", selectedPhoto);
   if (recordedAudioBlob) fd.append("audio", recordedAudioBlob, "voice-note.webm");
 
   submitBtn.disabled = true;
   submitBtn.textContent = "ناردن... (AI شیکاری دەکات، چەند چرکەیەک ڕادەگرێت)";
 
   try {
+    fd.append("photo", await shrinkImage(selectedPhoto));
     const res = await fetch(API_BASE + "/api/reports", { method: "POST", body: fd });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));

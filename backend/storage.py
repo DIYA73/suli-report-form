@@ -9,7 +9,6 @@ and voice recording citizens submitted before that point.
 """
 
 import logging
-import mimetypes
 import uuid
 
 import httpx
@@ -21,16 +20,14 @@ logger = logging.getLogger("storage")
 _HTTP_TIMEOUT = 20.0
 
 
-async def upload_bytes(data: bytes, original_filename: str, subdir: str) -> str:
-    """Uploads `data` to Supabase Storage under `<subdir>/<random-name>` and
-    returns the public URL. Raises on failure (caller should turn that into
-    an HTTP error - we never want to silently "succeed" and lose the file)."""
-    ext = ""
-    if original_filename and "." in original_filename:
-        ext = "." + original_filename.rsplit(".", 1)[-1].lower()[:10]
-    object_name = f"{subdir}/{uuid.uuid4().hex}{ext}"
-
-    content_type = mimetypes.guess_type(original_filename or "")[0] or "application/octet-stream"
+async def upload_bytes(data: bytes, subdir: str, ext: str, content_type: str) -> str:
+    """Uploads `data` to Supabase Storage under `<subdir>/<random-name>.<ext>`
+    and returns the public URL. `ext` and `content_type` come from main.py's
+    magic-byte sniffing (uploads.py), never from the client's filename, so
+    the stored object can't be an .html/.svg that would run as a page.
+    Raises on failure (caller should turn that into an HTTP error - we never
+    want to silently "succeed" and lose the file)."""
+    object_name = f"{subdir}/{uuid.uuid4().hex}.{ext}"
 
     upload_url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{object_name}"
     headers = {
