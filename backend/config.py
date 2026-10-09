@@ -22,12 +22,24 @@ CATEGORIES = {
 }
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+# DATA_DIR can be overridden (e.g. to point at a persistent disk, or at a temp
+# folder in tests); defaults to <repo>/data as before.
+DATA_DIR = os.environ.get("DATA_DIR", "").strip() or os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "reports.db")
 PHOTOS_DIR = os.path.join(DATA_DIR, "uploads", "photos")
 AUDIO_DIR = os.path.join(DATA_DIR, "uploads", "audio")
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB per file, generous for a phone photo/voice note
+
+# Free-text fields are capped server-side (they end up in the DB, on the public
+# map, and in the AI prompt). Longer input is truncated, never rejected.
+MAX_DESCRIPTION_CHARS = 2000
+MAX_LOCATION_LABEL_CHARS = 200
+
+# Optional shared secret for the admin-only endpoints (dashboard data, CSV
+# export, AI re-triage, media re-attach). Unset = those endpoints stay open,
+# exactly as before - set it in the Render dashboard to lock them down.
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "").strip()
 
 # Supabase Storage (optional). When set, uploaded photos/audio are stored
 # there instead of the local disk - important on hosts like Render's free

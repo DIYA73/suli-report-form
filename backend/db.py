@@ -13,10 +13,12 @@ avoids that.
 
 import csv
 import io
+import math
 import os
 from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
 from config import DB_PATH, CATEGORIES
 
@@ -28,12 +30,32 @@ if DATABASE_URL:
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
     ENGINE_URL = DATABASE_URL
-    IS_POSTGRES = True
+    # DATABASE_URL=sqlite:///... is also allowed (handy for tests/local dev).
+    IS_POSTGRES = not DATABASE_URL.startswith("sqlite")
 else:
     ENGINE_URL = f"sqlite:///{DB_PATH}"
     IS_POSTGRES = False
 
-engine = create_engine(ENGINE_URL, future=True)
+if IS_POSTGRES:
+    _connect_args = {}
+    if make_url(ENGINE_URL).get_driver_name() == "psycopg":
+        # A plain postgresql:// URL uses psycopg 3 on current SQLAlchemy. psycopg 3
+        # silently switches to server-side prepared statements once the same query
+        # has run a few times on a connection, and Supabase's transaction pooler
+        # (port 6543, the one the README recommends) does not support those -
+        # that shows up as random 'prepared statement ... does not exist' errors
+        # under load. prepare_threshold=None turns the feature off (harmless on
+        # direct connections too).
+        _connect_args["prepare_threshold"] = None
+    # Free-tier hosting (Render + Supabase's pooler) silently drops idle
+    # connections. Without pre-ping the first request after a quiet spell
+    # fails with "server closed the connection unexpectedly" (a 500 for the
+    # citizen); pre-ping checks the connection first and reconnects if needed.
+    engine = create_engine(
+        ENGINE_URL, future=True, pool_pre_ping=True, pool_recycle=300, connect_args=_connect_args
+    )
+else:
+    engine = create_engine(ENGINE_URL, future=True)
 
 if IS_POSTGRES:
     ID_COLUMN = "id SERIAL PRIMARY KEY"
@@ -107,6 +129,18 @@ def init_db():
             pass
 
 
+def _clean_row(row):
+    """JSON can't represent inf/nan, and one such value in a single row would
+    make GET /api/reports (dashboard + map) fail for everybody. New input is
+    validated in main.py, but this keeps any already-stored bad row harmless."""
+    d = dict(row)
+    for key in ("lat", "lng", "location_accuracy"):
+        v = d.get(key)
+        if v is not None and not math.isfinite(v):
+            d[key] = None
+    return d
+
+
 def insert_report(category, description, lat, lng, accuracy, location_label, photo_path, audio_path):
     created_at = datetime.now(timezone.utc).isoformat()
     with engine.begin() as conn:
@@ -145,6 +179,27 @@ def list_reports(limit=200, offset=0):
             ),
             {"limit": limit, "offset": offset},
         ).mappings().all()
+        return [_clean_row(r) for r in rows]
+
+
+def list_map_reports(limit=1000):
+    """Minimal columns for the PUBLIC map page: only reports that have a valid
+    location, and none of the raw citizen-typed description, audio, or GPS
+    accuracy. (GET /api/reports - the full rows - is the admin/dashboard view.)"""
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT id, created_at, category, lat, lng, location_label, photo_path,
+                       severity, ai_summary, department, ai_status
+                FROM reports
+                WHERE lat BETWEEN -90 AND 90 AND lng BETWEEN -180 AND 180
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"limit": limit},
+        ).mappings().all()
         return [dict(r) for r in rows]
 
 
@@ -163,7 +218,7 @@ def get_report(report_id):
             ),
             {"id": report_id},
         ).mappings().first()
-        return dict(row) if row else None
+        return _clean_row(row) if row else None
 
 
 def list_report_ids(exclude_status=None):
@@ -303,6 +358,18 @@ def stats():
     }
 
 
+# Spreadsheet apps treat a cell starting with one of these as a formula. Citizens
+# control description/location text, so prefix those cells with ' to keep them
+# plain text (the standard CSV-injection mitigation).
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value):
+    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 def export_csv():
     with engine.begin() as conn:
         rows = conn.execute(
@@ -325,9 +392,11 @@ def export_csv():
     )
     for r in rows:
         category_label = CATEGORIES.get(r[2], "پۆلێنی نەکراو") if r[2] else "پۆلێنی نەکراو"
-        writer.writerow([
+        writer.writerow([_csv_safe(v) for v in (
             r[0], r[1], r[2], category_label, r[3],
             r[4], r[5], r[6], r[7], r[8], r[9], r[10],
             r[11], r[12], r[13], r[14],
-        ])
-    return buf.getvalue()
+        )])
+    # Leading BOM so Excel opens the file as UTF-8 (otherwise Kurdish/Arabic
+    # text shows up as garbage).
+    return "\ufeff" + buf.getvalue()

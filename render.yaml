@@ -30,3 +30,9 @@ services:
       # severity/summary/department. Get a key at console.anthropic.com.
       - key: ANTHROPIC_API_KEY
         sync: false
+      # Locks the dashboard data / CSV export / re-triage / media re-attach
+      # endpoints behind an X-Admin-Token header (the dashboard asks for it).
+      # Use a long random string. Unset = those endpoints are open to anyone
+      # with the URL (see README.md, "Your dashboard").
+      - key: ADMIN_TOKEN
+        sync: false
