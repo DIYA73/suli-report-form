@@ -9,12 +9,12 @@
 <link href="https://fonts.googleapis.com/css2?family=Noto+Kufi+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #17181c;
-    --card: #1f2127;
-    --border: #33363f;
-    --text: #f2f2f4;
-    --text-dim: #9a9ca6;
-    --text-mute: #6f7280;
+    --bg: #f5f1e6;
+    --card: #fbf9f3;
+    --border: #d9d4c3;
+    --text: #113529;
+    --text-dim: #4a5d53;
+    --text-mute: #8d9790;
     --accent: #f2b21b;
     --accent-soft: rgba(242,178,27,0.18);
     --success: #2fbf71;
@@ -56,7 +56,7 @@
     gap: 6px;
   }
   .btn:hover { border-color: var(--accent); }
-  .btn.primary { background: var(--accent); border-color: var(--accent); color: #17181c; }
+  .btn.primary { background: var(--text); border-color: var(--text); color: #fff; }
 
   .stats-row {
     display: grid;
@@ -91,7 +91,7 @@
   /* bar chart */
   .bar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; position: relative; }
   .bar-label { width: 150px; flex-shrink: 0; font-size: 13px; color: var(--text-dim); text-align: left; }
-  .bar-track { flex: 1; background: rgba(255,255,255,0.04); border-radius: 4px; height: 20px; overflow: hidden; }
+  .bar-track { flex: 1; background: rgba(17,53,41,0.07); border-radius: 4px; height: 20px; overflow: hidden; }
   .bar-fill {
     height: 100%;
     background: var(--accent);
@@ -122,7 +122,7 @@
     border-bottom: 1px solid var(--border);
     vertical-align: top;
   }
-  tbody tr:hover { background: rgba(255,255,255,0.02); }
+  tbody tr:hover { background: rgba(17,53,41,0.035); }
   .table-scroll { overflow-x: auto; }
   .filter-row {
     display: flex;
@@ -147,7 +147,7 @@
   .pill {
     display: inline-block;
     background: var(--accent-soft);
-    color: #f2b21b;
+    color: var(--text);
     border-radius: 999px;
     padding: 3px 10px;
     font-size: 12px;
@@ -155,7 +155,7 @@
   }
   .muted { color: var(--text-mute); }
   .desc-cell { max-width: 260px; }
-  a.link { color: #f2b21b; text-decoration: none; }
+  a.link { color: var(--text); text-decoration: none; }
   a.link:hover { text-decoration: underline; }
   audio.mini { height: 30px; width: 190px; }
   .thumb {
@@ -177,7 +177,7 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  .dept-pill { background: rgba(217,164,65,0.16); color: #e3bd7a; }
+  .dept-pill { background: rgba(217,164,65,0.18); color: #8a6212; }
   .ai-summary-line {
     margin-top: 6px;
     color: var(--text-dim);
@@ -329,8 +329,8 @@ const SEVERITY_COLORS = { 1: "#2fbf71", 2: "#8bc34a", 3: "#d9a441", 4: "#e08a3c"
 
 function severityCell(r) {
   if (r.ai_status === "done" && r.severity) {
-    const color = SEVERITY_COLORS[r.severity] || "#9a9ca6";
-    return `<span class="sev-badge" style="background:${color}22; color:${color}; border:1px solid ${color}55;">${r.severity}/5</span>`;
+    const color = SEVERITY_COLORS[r.severity] || "#4a5d53";
+    return `<span class="sev-badge" style="background:${color}; color:#fff;">${r.severity}/5</span>`;
   }
   const labels = {
     unavailable: "کلیلی AI دانەمەزراوە",
